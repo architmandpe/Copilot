@@ -1,5 +1,5 @@
 import datetime as dt
-from parser import parse_task
+from parser import parse_task, new_conversation
 
 def test_parse_extracts_a_title():
     draft = parse_task("email the design team about the logo")
@@ -38,3 +38,9 @@ def test_two_tasks_are_merged_not_dropped():
 def test_explicit_date_is_pinned_exactly():
     draft = parse_task("submit the report by 2026-08-01")
     assert draft.due_date == "2026-08-01"
+
+def test_conversational_chain_resolves_it_across_turns():
+    say = new_conversation()
+    say("add a task to email the design team")
+    reply = say("actually make it high priority")
+    assert "high" in reply.lower()

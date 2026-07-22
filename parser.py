@@ -71,13 +71,14 @@ chat_prompt = ChatPromptTemplate.from_messages([
 
 chat_chain = chat_prompt | model
 
-def new_conversation() -> Callable[[str], str]:
-    """Returns a say(text) function with its own private, isolated history."""
+def new_conversation(max_turns: int = 5) -> Callable[[str], str]:
+    """Returns a say(text) function with its own private, isolated history, bounded to the last max_turns exchanges."""
     history = []
 
     def say(text: str) -> str:
         reply = chat_chain.invoke({"history": history, "input": text})
         history.extend([HumanMessage(text), AIMessage(reply.content)])
+        history[:] = history[-(max_turns * 2):]
         return reply.content
 
     return say
