@@ -1,7 +1,8 @@
-import os
-import json
 import datetime as dt
-from groq import Groq
+from typing import Callable
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 load_dotenv()
@@ -13,7 +14,8 @@ class TaskDraft(BaseModel):
     due_date: str | None = Field(default=None, description="ISO date YYYY-MM-DD, or null if none implied")
     priority: str = Field(default="normal", description="one of: low, normal, high")
 
-client = Groq(api_key=os.environ["GROQ_API_KEY"])
+model = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+structured = model.with_structured_output(TaskDraft, include_raw=True, method="json_schema")
 
 SYSTEM = (
     "You convert a user's sentence into a single task. "
@@ -25,46 +27,58 @@ SYSTEM = (
     "combined title rather than dropping any of them. "
     "Set priority to 'high' for urgent language (e.g. 'ASAP', 'urgent'), "
     "'low' for vague/uncertain/tentative language (e.g. 'maybe', 'whenever'), "
-    "and 'normal' otherwise."
+    "and 'normal' otherwise. "
+    "Today's date is {today} ({weekday})."
 )
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system", SYSTEM),
+    ("user", "{sentence}"),
+])
+
+chain = prompt | structured
 
 
 class TaskParseError(Exception):
     """Raised when the model fails to return a usable TaskDraft after retrying."""
 
 def parse_task(sentence: str) -> TaskDraft:
-    schema = TaskDraft.model_json_schema()
-    schema["required"] = list(schema["properties"].keys())
-
     today_date = dt.date.today()
     today = today_date.isoformat()
     weekday = today_date.strftime("%A")
-    system_with_date = SYSTEM + f" Today's date is {today} ({weekday})."
 
     last_error = None
     for attempt in range(2):
         try:
-            response = client.chat.completions.create(
-                model="openai/gpt-oss-20b",
-                temperature=0,
-                messages=[
-                    {"role": "system", "content": system_with_date},
-                    {"role": "user", "content": sentence},
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "task_draft",
-                        "strict": True,
-                        "schema": schema,
-                    },
-                },
-            )
-            usage = response.usage
-            print(f"[cost] prompt={usage.prompt_tokens} completion={usage.completion_tokens}")
-            return TaskDraft.model_validate(json.loads(response.choices[0].message.content))
+            result = chain.invoke({"sentence": sentence, "today": today, "weekday": weekday})
+            if result["parsing_error"] is not None:
+                last_error = result["parsing_error"]
+                continue
+            usage = result["raw"].usage_metadata
+            print(f"[cost] prompt={usage['input_tokens']} completion={usage['output_tokens']}")
+            return result["parsed"]
         except Exception as e:
             last_error = e
 
     raise TaskParseError(f"Model failed to return a usable task after 2 attempts: {last_error}")
+
+
+chat_prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are Nodii's task assistant. Be concise."),
+    MessagesPlaceholder("history"),
+    ("user", "{input}"),
+])
+
+chat_chain = chat_prompt | model
+
+def new_conversation() -> Callable[[str], str]:
+    """Returns a say(text) function with its own private, isolated history."""
+    history = []
+
+    def say(text: str) -> str:
+        reply = chat_chain.invoke({"history": history, "input": text})
+        history.extend([HumanMessage(text), AIMessage(reply.content)])
+        return reply.content
+
+    return say
 
