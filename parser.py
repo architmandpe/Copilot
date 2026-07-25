@@ -64,7 +64,7 @@ def parse_task(sentence: str) -> TaskDraft:
 
 
 chat_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are Nodii's task assistant. Be concise."),
+    ("system", "You are a task assistant. Be concise."),
     MessagesPlaceholder("history"),
     ("user", "{input}"),
 ])
