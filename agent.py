@@ -54,22 +54,57 @@ def make_tools_for_user(user_id: int) -> list:
 
     @tool
     def delete_task(task_id: int) -> str:
-        """Delete a task by id. Call this immediately when the user asks to delete a task -
-        do NOT ask the user for confirmation yourself in chat. The system automatically
-        handles confirmation before this tool actually executes."""
+        """Delete a single task by id. If deleting more than one task, or all of a user's
+        tasks, use delete_multiple_tasks instead of calling this repeatedly. Call this
+        immediately when the user asks to delete a task - do NOT ask the user for
+        confirmation yourself in chat. The system automatically handles confirmation
+        before this tool actually executes."""
         resp = httpx.delete(
             f"{TASK_TRACKER_URL}/internal/tasks/{user_id}/{task_id}",
             headers={"X-Internal-Secret": INTERNAL_SECRET},
         )
+        if resp.status_code == 404:
+            return f"Task {task_id} doesn't exist (it may already be deleted)."
         resp.raise_for_status()
         return f"Deleted task {task_id}."
 
-    return [create_task, list_my_tasks, search_tasks, delete_task]
+    @tool
+    def delete_multiple_tasks(task_ids: list[int]) -> str:
+        """Delete multiple tasks at once, in a single operation. Use this whenever the user
+        asks to delete more than one task, or asks to delete all of their tasks - if you need
+        the full list of ids first, call list_my_tasks, then pass every id here in ONE call.
+        Do not call delete_task repeatedly instead of this. Call this immediately - do NOT ask
+        the user for confirmation yourself in chat. The system automatically handles
+        confirmation before this tool actually executes."""
+        resp = httpx.request(
+            "DELETE",
+            f"{TASK_TRACKER_URL}/internal/tasks/{user_id}",
+            json={"task_ids": task_ids},
+            headers={"X-Internal-Secret": INTERNAL_SECRET},
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        parts = []
+        if result["deleted"]:
+            parts.append("Deleted tasks: " + ", ".join(map(str, result["deleted"])) + ".")
+        if result["not_found"]:
+            parts.append(
+                "Not found (already deleted or not yours): "
+                + ", ".join(map(str, result["not_found"])) + "."
+            )
+        return " ".join(parts) if parts else "No tasks were deleted."
+
+    return [create_task, list_my_tasks, search_tasks, delete_task, delete_multiple_tasks]
 
 
 AGENT_SYSTEM_PROMPT = SystemMessage(
     "You are a task assistant. You have two kinds of tools: read-only lookups "
-    "(list_my_tasks, search_tasks) and actions that change data (create_task, delete_task). "
+    "(list_my_tasks, search_tasks) and actions that change data (create_task, delete_task, "
+    "delete_multiple_tasks). "
+    "If the user asks to delete more than one task, or all of their tasks, use "
+    "delete_multiple_tasks in a SINGLE call with every relevant id - call list_my_tasks first "
+    "if you need to find the ids for 'all tasks'. Do not call delete_task repeatedly instead "
+    "of this; only use delete_task when exactly one specific task is being deleted. "
     "Use read-only lookups freely and generously whenever they would help answer the "
     "user's question, even if it's phrased loosely or indirectly - don't ask for "
     "clarification when a lookup could just answer it directly. Assume vague questions "
@@ -103,19 +138,26 @@ def tools_node(state: AgentState) -> dict:
     return result
 
 
+DELETE_TOOL_NAMES = ("delete_task", "delete_multiple_tasks")
+
 def confirm_delete_node(state: AgentState) -> dict:
     last = state["messages"][-1]
-    delete_call = next(c for c in last.tool_calls if c["name"] == "delete_task")
-    task_id = delete_call["args"]["task_id"]
+    delete_call = next(c for c in last.tool_calls if c["name"] in DELETE_TOOL_NAMES)
 
-    confirmed = interrupt({"question": f"Confirm deleting task {task_id}?", "task_id": task_id})
+    if delete_call["name"] == "delete_task":
+        question = f"Confirm deleting task {delete_call['args']['task_id']}?"
+    else:
+        ids = delete_call["args"]["task_ids"]
+        question = f"Confirm deleting {len(ids)} tasks ({', '.join(map(str, ids))})?"
+
+    confirmed = interrupt({"question": question})
 
     if confirmed:
         tools = make_tools_for_user(state["user_id"])
-        delete_tool = next(t for t in tools if t.name == "delete_task")
-        result_text = delete_tool.invoke({"task_id": task_id})
+        delete_tool = next(t for t in tools if t.name == delete_call["name"])
+        result_text = delete_tool.invoke(delete_call["args"])
     else:
-        result_text = f"Cancelled deleting task {task_id}."
+        result_text = "Cancelled - nothing was deleted."
 
     return {
         "messages": [ToolMessage(content=result_text, tool_call_id=delete_call["id"])],
@@ -129,7 +171,7 @@ def route(state: AgentState) -> str:
         return END
     if state["tool_call_count"] >= MAX_TOOL_CALLS:
         return END
-    if any(c["name"] == "delete_task" for c in last.tool_calls):
+    if any(c["name"] in DELETE_TOOL_NAMES for c in last.tool_calls):
         return "confirm_delete"
     return "tools"
 
