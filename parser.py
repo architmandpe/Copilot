@@ -14,7 +14,7 @@ class TaskDraft(BaseModel):
     due_date: str | None = Field(default=None, description="ISO date YYYY-MM-DD, or null if none implied")
     priority: str = Field(default="normal", description="one of: low, normal, high")
 
-model = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-20b", temperature=0, timeout=10, max_retries=2)
 structured = model.with_structured_output(TaskDraft, include_raw=True, method="json_schema")
 
 SYSTEM = (

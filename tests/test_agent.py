@@ -1,6 +1,6 @@
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END
-from agent import graph, route
+from agent import graph, route, make_tools_for_user
 
 USER_ID = 11
 
@@ -48,3 +48,17 @@ def test_loop_guard_forces_end_after_max_tool_calls():
     message = AIMessage(content="", tool_calls=[{"name": "list_my_tasks", "args": {}, "id": "x"}])
     state = {"messages": [message], "user_id": USER_ID, "tool_call_count": 5}
     assert route(state) == END
+
+
+def test_tools_are_scoped_to_the_user_they_were_built_for():
+    tools_a = make_tools_for_user(USER_ID)
+    tools_b = make_tools_for_user(999999)
+
+    create_task_a = next(t for t in tools_a if t.name == "create_task")
+    list_tasks_b = next(t for t in tools_b if t.name == "list_my_tasks")
+
+    marker = "isolation test task - should belong to user 11 only"
+    create_task_a.invoke({"title": marker})
+
+    result_b = list_tasks_b.invoke({})
+    assert marker not in result_b

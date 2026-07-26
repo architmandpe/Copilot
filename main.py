@@ -1,11 +1,15 @@
 import os
+import time
 from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from parser import parse_task, TaskDraft
 from rag import ask as rag_ask
 from agent import graph
+from observability import log_turn
 
 app = FastAPI(title="Copilot")
 
@@ -40,14 +44,65 @@ class ChatRequest(BaseModel):
 @app.post("/chat", dependencies=[Depends(verify_internal_secret)])
 def chat(body: ChatRequest) -> dict:
     config = {"configurable": {"thread_id": body.thread_id}}
-    if body.confirm is not None:
-        result = graph.invoke(Command(resume=body.confirm), config=config)
-    else:
-        result = graph.invoke(
-            {"messages": [HumanMessage(body.message)], "user_id": body.user_id, "tool_call_count": 0},
-            config=config,
+    usage_handler = UsageMetadataCallbackHandler()
+    config["callbacks"] = [usage_handler]
+
+    prior_state = graph.get_state(config).values
+    messages_before = len(prior_state.get("messages", []))
+
+    start = time.perf_counter()
+    outcome = "error"
+    tools_called: list[str] = []
+    try:
+        if body.confirm is not None:
+            result = graph.invoke(Command(resume=body.confirm), config=config)
+        else:
+            result = graph.invoke(
+                {"messages": [HumanMessage(body.message)], "user_id": body.user_id, "tool_call_count": 0},
+                config=config,
+            )
+
+        new_messages = result["messages"][messages_before:]
+        tools_called.extend(
+            call["name"] for m in new_messages for call in (getattr(m, "tool_calls", None) or [])
         )
-    interrupt = result.get("__interrupt__")
-    if interrupt:
-        return {"status": "confirm_required", "question": interrupt[0].value["question"]}
-    return {"status": "done", "answer": result["messages"][-1].content}
+
+        interrupt = result.get("__interrupt__")
+        if interrupt:
+            outcome = "confirm_required"
+            return {"status": "confirm_required", "question": interrupt[0].value["question"]}
+        outcome = "done"
+        return {"status": "done", "answer": result["messages"][-1].content}
+    except Exception:
+        outcome = "error"
+        return {"status": "error", "answer": "I'm having trouble reaching the assistant right now. Please try again in a moment."}
+    finally:
+        total_tokens = sum(u["total_tokens"] for u in usage_handler.usage_metadata.values())
+        log_turn(
+            user_id=body.user_id,
+            thread_id=body.thread_id,
+            tools_called=tools_called,
+            total_tokens=total_tokens,
+            latency_s=time.perf_counter() - start,
+            outcome=outcome,
+        )
+
+
+@app.post("/stream", dependencies=[Depends(verify_internal_secret)])
+def stream(body: ChatRequest) -> StreamingResponse:
+    config = {"configurable": {"thread_id": body.thread_id}}
+    if body.confirm is not None:
+        stream_input = Command(resume=body.confirm)
+    else:
+        stream_input = {"messages": [HumanMessage(body.message)], "user_id": body.user_id, "tool_call_count": 0}
+
+    def event_stream():
+        try:
+            for chunk, _metadata in graph.stream(stream_input, config=config, stream_mode="messages"):
+                if isinstance(chunk.content, str) and chunk.content:
+                    yield f"data: {chunk.content}\n\n"
+        except Exception:
+            yield "data: I'm having trouble reaching the assistant right now. Please try again in a moment.\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
