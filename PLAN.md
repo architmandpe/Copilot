@@ -29,7 +29,7 @@ def make_tools_for_user(user_id: int) -> list:
 
     @tool
     def search_tasks(query: str) -> str:
-        """Find the user's tasks relevant to a query (uses M3 RAG retrieval)."""
+        """Find the user's tasks relevant to a query (uses RAG retrieval)."""
         ...
 
     @tool
