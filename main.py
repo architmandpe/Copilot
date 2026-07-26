@@ -101,6 +101,10 @@ def stream(body: ChatRequest) -> StreamingResponse:
             for chunk, _metadata in graph.stream(stream_input, config=config, stream_mode="messages"):
                 if isinstance(chunk.content, str) and chunk.content:
                     yield f"data: {chunk.content}\n\n"
+            state = graph.get_state(config)
+            if state.interrupts:
+                question = state.interrupts[0].value["question"]
+                yield f"data: [CONFIRM_REQUIRED] {question}\n\n"
         except Exception:
             yield "data: I'm having trouble reaching the assistant right now. Please try again in a moment.\n\n"
         yield "data: [DONE]\n\n"
