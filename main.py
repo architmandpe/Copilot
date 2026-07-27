@@ -7,7 +7,7 @@ from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from parser import parse_task, TaskDraft
-from rag import ask as rag_ask
+from rag import ask as rag_ask, store
 from agent import graph
 from observability import log_turn
 
@@ -33,6 +33,16 @@ class AskRequest(BaseModel):
 @app.post("/ask", dependencies=[Depends(verify_internal_secret)])
 def ask(body: AskRequest) -> dict:
     return rag_ask(body.user_id, body.question)
+
+
+class SearchRequest(BaseModel):
+    user_id: int
+    query: str
+
+@app.post("/search", dependencies=[Depends(verify_internal_secret)])
+def search(body: SearchRequest) -> list[dict]:
+    hits = store.similarity_search(body.query, k=5, filter={"user_id": body.user_id})
+    return [{"task_id": d.metadata["task_id"], "snippet": d.page_content} for d in hits]
 
 
 class ChatRequest(BaseModel):
