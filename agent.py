@@ -10,7 +10,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt
 from langgraph.prebuilt import ToolNode
 from parser import model
-from rag import store, fetch_user_tasks, TASK_TRACKER_URL, INTERNAL_SECRET
+from rag import store, fetch_user_tasks, upsert_task, remove_task, TASK_TRACKER_URL, INTERNAL_SECRET
 
 MAX_TOOL_CALLS = 5
 
@@ -42,6 +42,7 @@ def make_tools_for_user(user_id: int) -> list:
         )
         resp.raise_for_status()
         task = resp.json()
+        upsert_task(user_id, task)
         return f"Created task {task['id']}: {task['title']}"
 
     @tool
@@ -56,6 +57,8 @@ def make_tools_for_user(user_id: int) -> list:
         )
         resp.raise_for_status()
         tasks = resp.json()
+        for task in tasks:
+            upsert_task(user_id, task)
         return "Created tasks: " + ", ".join(f"[{t['id']}] {t['title']}" for t in tasks) + "."
 
     @tool
@@ -113,6 +116,7 @@ def make_tools_for_user(user_id: int) -> list:
             return f"Task {task_id} doesn't exist (it may have been deleted)."
         resp.raise_for_status()
         task = resp.json()
+        upsert_task(user_id, task)
         return (
             f"Updated task {task['id']}: {task['title']} "
             f"(status={task['status']}, priority={task['priority']}, due={task['due_at']})."
@@ -143,9 +147,12 @@ def make_tools_for_user(user_id: int) -> list:
         )
         resp.raise_for_status()
         result = resp.json()
+        updated_tasks = result["updated"]
+        for task in updated_tasks:
+            upsert_task(user_id, task)
         parts = []
-        if result["updated"]:
-            parts.append("Updated tasks: " + ", ".join(map(str, result["updated"])) + ".")
+        if updated_tasks:
+            parts.append("Updated tasks: " + ", ".join(str(t["id"]) for t in updated_tasks) + ".")
         if result["not_found"]:
             parts.append("Not found: " + ", ".join(map(str, result["not_found"])) + ".")
         return " ".join(parts) if parts else "No tasks were updated."
@@ -164,6 +171,7 @@ def make_tools_for_user(user_id: int) -> list:
         if resp.status_code == 404:
             return f"Task {task_id} doesn't exist (it may already be deleted)."
         resp.raise_for_status()
+        remove_task(user_id, task_id)
         return f"Deleted task {task_id}."
 
     @tool
@@ -182,6 +190,8 @@ def make_tools_for_user(user_id: int) -> list:
         )
         resp.raise_for_status()
         result = resp.json()
+        for tid in result["deleted"]:
+            remove_task(user_id, tid)
         parts = []
         if result["deleted"]:
             parts.append("Deleted tasks: " + ", ".join(map(str, result["deleted"])) + ".")

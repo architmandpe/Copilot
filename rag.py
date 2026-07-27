@@ -29,16 +29,31 @@ def fetch_user_tasks(user_id: int) -> list[dict]:
     return resp.json()
 
 
+def _doc_id(user_id: int, task_id: int) -> str:
+    return f"user{user_id}-task{task_id}"
+
+
+def _task_document(user_id: int, task: dict) -> Document:
+    return Document(
+        page_content=f"Task: {task['title']}. Status: {task['status']}. Due: {task['due_at']}. Priority: {task['priority']}",
+        metadata={"user_id": user_id, "task_id": task["id"]},
+    )
+
+
+def upsert_task(user_id: int, task: dict) -> None:
+    """Adds or refreshes one task's embedding - keeps the vector store in sync after
+    create/update, since ingestion otherwise only happens once, up front."""
+    store.add_documents([_task_document(user_id, task)], ids=[_doc_id(user_id, task["id"])])
+
+
+def remove_task(user_id: int, task_id: int) -> None:
+    store.delete(ids=[_doc_id(user_id, task_id)])
+
+
 def ingest_user_tasks(user_id: int) -> None:
     tasks = fetch_user_tasks(user_id)
-    docs = [
-        Document(
-            page_content=f"Task: {t['title']}. Status: {t['status']}. Due: {t['due_at']}. Priority: {t['priority']}",
-            metadata={"user_id": user_id, "task_id": t["id"]},
-        )
-        for t in tasks
-    ]
-    ids = [f"user{user_id}-task{t['id']}" for t in tasks]
+    docs = [_task_document(user_id, t) for t in tasks]
+    ids = [_doc_id(user_id, t["id"]) for t in tasks]
     if docs:
         store.add_documents(docs, ids=ids)
 
