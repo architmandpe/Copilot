@@ -28,16 +28,19 @@ def make_tools_for_user(user_id: int) -> list:
     @tool
     def create_task(
         title: str,
+        priority: str | None = None,
         due_date: str | None = None,
         recurrence: str | None = None,
     ) -> str:
-        """Create a task for the user. due_date must be an ISO date (YYYY-MM-DD) - resolve
-        relative dates like 'tomorrow' or 'friday' yourself using today's date given above.
-        recurrence is one of 'daily', 'weekly', 'monthly', or None for a one-off task - if
-        the user wants a recurring task but gives no starting date, default due_date to today."""
+        """Create a task for the user. priority is one of 'low', 'normal', or 'high' - only
+        pass it if the user actually asked for a priority, otherwise leave it None (it
+        defaults to 'normal'). due_date must be an ISO date (YYYY-MM-DD) - resolve relative
+        dates like 'tomorrow' or 'friday' yourself using today's date given above. recurrence
+        is one of 'daily', 'weekly', 'monthly', or None for a one-off task - if the user wants
+        a recurring task but gives no starting date, default due_date to today."""
         resp = httpx.post(
             f"{TASK_TRACKER_URL}/internal/tasks/{user_id}",
-            json={"title": title, "due_at": due_date, "recurrence": recurrence},
+            json={"title": title, "priority": priority, "due_at": due_date, "recurrence": recurrence},
             headers={"X-Internal-Secret": INTERNAL_SECRET},
         )
         resp.raise_for_status()
