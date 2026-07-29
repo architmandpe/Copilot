@@ -1,8 +1,26 @@
+import httpx
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END
 from agent import graph, route, make_tools_for_user
+from rag import TASK_TRACKER_URL, INTERNAL_SECRET
 
 USER_ID = 11
+
+
+def _delete_tasks_titled(title: str) -> None:
+    """Cleans up real tasks these behavior tests create against the live DB,
+    so repeated test runs don't accumulate duplicate clutter in the account."""
+    resp = httpx.get(
+        f"{TASK_TRACKER_URL}/internal/tasks/{USER_ID}",
+        headers={"X-Internal-Secret": INTERNAL_SECRET},
+    )
+    resp.raise_for_status()
+    for task in resp.json():
+        if task["title"] == title:
+            httpx.delete(
+                f"{TASK_TRACKER_URL}/internal/tasks/{USER_ID}/{task['id']}",
+                headers={"X-Internal-Secret": INTERNAL_SECRET},
+            )
 
 
 def tool_calls_made(result: dict) -> list[str]:
@@ -15,11 +33,14 @@ def tool_calls_made(result: dict) -> list[str]:
 
 def test_create_request_calls_create_task_tool():
     config = {"configurable": {"thread_id": "test-behavior-create"}}
-    result = graph.invoke(
-        {"messages": [HumanMessage("make a task to test behavior assertion")], "user_id": USER_ID, "tool_call_count": 0},
-        config=config,
-    )
-    assert "create_task" in tool_calls_made(result)
+    try:
+        result = graph.invoke(
+            {"messages": [HumanMessage("make a task to test behavior assertion")], "user_id": USER_ID, "tool_call_count": 0},
+            config=config,
+        )
+        assert "create_task" in tool_calls_made(result)
+    finally:
+        _delete_tasks_titled("test behavior assertion")
 
 
 def test_question_goes_through_a_lookup_not_fabrication():
@@ -58,7 +79,9 @@ def test_tools_are_scoped_to_the_user_they_were_built_for():
     list_tasks_b = next(t for t in tools_b if t.name == "list_my_tasks")
 
     marker = "isolation test task - should belong to user 11 only"
-    create_task_a.invoke({"title": marker})
-
-    result_b = list_tasks_b.invoke({})
-    assert marker not in result_b
+    try:
+        create_task_a.invoke({"title": marker})
+        result_b = list_tasks_b.invoke({})
+        assert marker not in result_b
+    finally:
+        _delete_tasks_titled(marker)
