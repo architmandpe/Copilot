@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from fastapi import Depends, FastAPI, Header, HTTPException, status
@@ -107,16 +108,20 @@ def stream(body: ChatRequest) -> StreamingResponse:
         stream_input = {"messages": [HumanMessage(body.message)], "user_id": body.user_id, "tool_call_count": 0}
 
     def event_stream():
+        # Each frame's payload is JSON-encoded (not sent as raw text) so a chunk
+        # containing a literal newline - e.g. a numbered list mid-stream - can never
+        # collide with the blank-line "\n\n" that terminates an SSE frame.
         try:
             for chunk, _metadata in graph.stream(stream_input, config=config, stream_mode="messages"):
                 if isinstance(chunk.content, str) and chunk.content:
-                    yield f"data: {chunk.content}\n\n"
+                    yield f"data: {json.dumps(chunk.content)}\n\n"
             state = graph.get_state(config)
             if state.interrupts:
                 question = state.interrupts[0].value["question"]
-                yield f"data: [CONFIRM_REQUIRED] {question}\n\n"
+                yield f"data: {json.dumps('[CONFIRM_REQUIRED] ' + question)}\n\n"
         except Exception:
-            yield "data: I'm having trouble reaching the assistant right now. Please try again in a moment.\n\n"
-        yield "data: [DONE]\n\n"
+            msg = "I'm having trouble reaching the assistant right now. Please try again in a moment."
+            yield f"data: {json.dumps(msg)}\n\n"
+        yield f"data: {json.dumps('[DONE]')}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
