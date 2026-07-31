@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from langchain_core.callbacks import UsageMetadataCallbackHandler
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessageChunk, HumanMessage
 from langgraph.types import Command
 from parser import parse_task, TaskDraft
 from rag import ask as rag_ask, store
@@ -113,6 +113,12 @@ def stream(body: ChatRequest) -> StreamingResponse:
         # collide with the blank-line "\n\n" that terminates an SSE frame.
         try:
             for chunk, _metadata in graph.stream(stream_input, config=config, stream_mode="messages"):
+                # stream_mode="messages" emits every message the graph produces,
+                # including the ToolMessages that carry raw tool output - the whole
+                # of list_my_tasks, ids and all. Only the assistant's own words
+                # belong in the chat.
+                if not isinstance(chunk, AIMessageChunk):
+                    continue
                 if isinstance(chunk.content, str) and chunk.content:
                     yield f"data: {json.dumps(chunk.content)}\n\n"
             state = graph.get_state(config)

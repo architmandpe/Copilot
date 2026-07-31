@@ -44,3 +44,49 @@ def test_conversational_chain_resolves_it_across_turns():
     say("add a task to email the design team")
     reply = say("actually make it high priority")
     assert "high" in reply.lower()
+
+
+# --- /stream frame filtering ---
+
+import json
+import main as main_module
+from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessageChunk, ToolMessage
+
+
+def _frames(monkeypatch, chunks):
+    """Runs /stream against a fake graph and returns the decoded payloads."""
+    monkeypatch.setattr(main_module, "graph", type("G", (), {
+        "stream": staticmethod(lambda *a, **k: iter((c, {}) for c in chunks)),
+        "get_state": staticmethod(lambda *a, **k: type("S", (), {"interrupts": []})()),
+    })())
+    monkeypatch.setenv("INTERNAL_SECRET", "test-secret")
+    client = TestClient(main_module.app)
+    resp = client.post(
+        "/stream",
+        json={"user_id": 1, "thread_id": "t", "message": "show my high priority tasks"},
+        headers={"X-Internal-Secret": "test-secret"},
+    )
+    assert resp.status_code == 200
+    return [
+        json.loads(line[len("data: "):])
+        for line in resp.text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+
+def test_stream_never_leaks_raw_tool_output(monkeypatch):
+    tool_dump = "[17] plan a trip (status=done, priority=normal, due=no due date)"
+    payloads = _frames(monkeypatch, [
+        AIMessageChunk(content=""),                                  # the tool-calling turn
+        ToolMessage(content=tool_dump, tool_call_id="c1"),           # raw tool result
+        AIMessageChunk(content="Here are your "),
+        AIMessageChunk(content="high-priority tasks."),
+    ])
+    assert tool_dump not in "".join(payloads)
+    assert "".join(p for p in payloads if p != "[DONE]") == "Here are your high-priority tasks."
+
+
+def test_stream_still_sends_the_assistant_reply(monkeypatch):
+    payloads = _frames(monkeypatch, [AIMessageChunk(content="All done.")])
+    assert payloads == ["All done.", "[DONE]"]
