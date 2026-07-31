@@ -49,13 +49,20 @@ def make_tools_for_user(user_id: int) -> list:
         return f'Created "{task["title"]}".'
 
     @tool
-    def create_multiple_tasks(titles: list[str]) -> str:
+    def create_multiple_tasks(
+        titles: list[str],
+        priority: str | None = None,
+        due_date: str | None = None,
+    ) -> str:
         """Create multiple tasks at once, in a single operation - e.g. after the user approves
         some or all of a set of subtasks you proposed. Pass only the titles the user actually
-        approved, not ones they rejected."""
+        approved, not ones they rejected. priority and due_date apply to EVERY task in the
+        batch; due_date must be an ISO date (YYYY-MM-DD). When these are the subtasks of a
+        parent task that already has a due date, pass that same due_date here so the steps
+        are scheduled alongside the thing they belong to."""
         resp = httpx.post(
             f"{TASK_TRACKER_URL}/internal/tasks/{user_id}/bulk",
-            json={"titles": titles},
+            json={"titles": titles, "priority": priority, "due_at": due_date},
             headers={"X-Internal-Secret": INTERNAL_SECRET},
         )
         resp.raise_for_status()
@@ -255,6 +262,11 @@ def build_system_prompt() -> SystemMessage:
         "create_multiple_tasks after the user responds, and only for the specific ones they "
         "approved (e.g. 'all', 'just 1 and 3', 'the first two') - never create ones they didn't "
         "approve or rejected. "
+        "Subtasks INHERIT THE PARENT TASK'S DUE DATE. If the goal you broke down is a task that "
+        "has a due date (either you just created it with one, or it already had one), pass that "
+        "same date as due_date on create_multiple_tasks. Leaving the steps undated strands them "
+        "away from the task they belong to. Call list_my_tasks first if you're not sure what the "
+        "parent's date is. Only leave due_date unset when the parent genuinely has no date. "
         "A task is OVERDUE if its due date is before today's date above and its status isn't "
         "'done'. A task is due today if its due date equals today. When asked what's overdue, "
         "what's due today/this week, or anything about deadlines, use list_my_tasks (it "
